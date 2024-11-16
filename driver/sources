@@ -1,0 +1,3 @@
+TARGETNAME=SimpleDriver
+TARGETTYPE=DRIVER
+SOURCES=driver.c

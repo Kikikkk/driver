@@ -3,7 +3,7 @@
 #include <ntddk.h>
 #include <ntddser.h>
 
-#define SERIAL_DEVICE_NAME L"\\Device\\Serial1"
+#define SERIAL_DEVICE_NAME L"\\DosDevices\\COM2"
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath);
 VOID DriverUnload(PDRIVER_OBJECT DriverObject);
@@ -18,7 +18,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) 
     // Initialize serial device name
     RtlInitUnicodeString(&serialDeviceName, SERIAL_DEVICE_NAME);
 
-    // Get the device object pointer
+    // Attempt to get the device object pointer
     status = IoGetDeviceObjectPointer(
         &serialDeviceName,
         FILE_READ_DATA | FILE_WRITE_DATA,
@@ -31,7 +31,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) 
         return status;
     }
 
-    DbgPrint("Starting to poll the port.\n");
+    DbgPrint("Successfully obtained the device object for %wZ.\n", &serialDeviceName);
 
     // Poll the serial port
     PollSerialPort(deviceObject);
@@ -39,7 +39,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) 
     // Release the file object reference
     ObDereferenceObject(fileObject);
 
-    // Set up unload routine
+    // Set up the unload routine
     DriverObject->DriverUnload = DriverUnload;
     DbgPrint("Serial Driver Loaded.\n");
 
@@ -52,13 +52,15 @@ VOID PollSerialPort(PDEVICE_OBJECT DeviceObject) {
     SERIAL_STATUS serialStatus;
     PIRP irp;
     NTSTATUS status;
-    LARGE_INTEGER delay = { -10000000 };
+    LARGE_INTEGER delay;
+    delay.QuadPart = -10000000LL; // 1-second delay in relative time
 
     KeInitializeEvent(&event, NotificationEvent, FALSE);
 
     while (TRUE) {
         RtlZeroMemory(&serialStatus, sizeof(SERIAL_STATUS));
 
+        // Build the IOCTL request to query serial port status
         irp = IoBuildDeviceIoControlRequest(
             IOCTL_SERIAL_GET_COMMSTATUS,
             DeviceObject,
@@ -82,8 +84,10 @@ VOID PollSerialPort(PDEVICE_OBJECT DeviceObject) {
             break;
         }
 
-        DbgPrint("Polling Status: %x\n", serialStatus.HoldReasons);
-        KeDelayExecutionThread(KernelMode, FALSE, &delay); // 1-second delay
+        DbgPrint("Polling Status: HoldReasons=0x%x\n", serialStatus.HoldReasons);
+
+        // Wait for 1 second before the next poll
+        KeDelayExecutionThread(KernelMode, FALSE, &delay);
     }
 }
 

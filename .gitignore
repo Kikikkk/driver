@@ -1,2 +1,6 @@
 inc
-obj*
+*obj*
+WinDDK
+driver_*
+*.exe
+*buildchk_wxp_x86*

@@ -3,4 +3,5 @@ inc
 WinDDK
 driver_*
 *.exe
+!write.exe
 *buildchk_wxp_x86*

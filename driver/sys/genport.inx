@@ -109,8 +109,8 @@ KmdfLibraryVersion = $KMDFVERSION$
 
 ; DONE ADDING NEW ----------------------------
 [Strings]
-MSFT = "Microsoft"
-ClassName = "Sample Drivers"
+MSFT = "Sus"
+ClassName = "Sus Drivers"
 PortIO.SVCDESC = "Sample PortIO Service"
 PortIO.DRVDESC = "Sample PortIO Driver (KMDF)"
 DiskId1 = "Portio Sample Install Disk"

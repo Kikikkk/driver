@@ -1,42 +1,44 @@
-import serial
-from serial import Serial
+import win32pipe
+import win32file
 import time
 
-# Configure the serial port
-ser = Serial(
-    port='\\\\.\\pipe\\emulated_com2',
-    baudrate=115200,  # Note: Adjusted to a more common baud rate for COM ports
-    parity=serial.PARITY_NONE,
-    stopbits=serial.STOPBITS_ONE,
-    bytesize=serial.EIGHTBITS,
-    timeout=1  # 1 second timeout, adjust as needed
-)
+# Define the pipe name
+pipe_name = r'\\.\pipe\emulated_com2'
 
-print("Connected to: " + ser.portstr)
-
-count = 1
-
-try:
+def read_from_pipe():
+    # Open the pipe
+    try:
+        pipe = win32file.CreateFile(
+            pipe_name,                # Pipe name
+            win32file.GENERIC_READ,    # Read access
+            0,                         # No sharing
+            None,                      # Default security attributes
+            win32file.OPEN_EXISTING,   # Open existing pipe
+            0,                         # No flags
+            None                       # No template file
+        )
+    except Exception as e:
+        print(f"Failed to open pipe: {e}")
+        return
+    
+    print(f"Connected to pipe: {pipe_name}")
+    
+    # Continuously read from the pipe in a while loop
     while True:
-        # Read bytes (you can adjust the size of the read depending on your use case)
-        data = ser.read(1024)  # Reads up to 1024 bytes at once, adjust as needed
-        if data:
-            # Process the received data
-            for byte in data:
-                # Ensure the byte is a printable character (or handle non-printable as needed)
-                if 32 <= byte <= 126:  # ASCII printable character range
-                    print(f"{count}: {chr(byte)}")
-                else:
-                    print(f"{count}: Non-printable byte 0x{byte:02X}")
+        try:
+            # Read data from the pipe (set buffer size)
+            _, data = win32file.ReadFile(pipe, 4096)
+            
+            # if hr == 0:
+            #     break
+            
+            print(f"Received data: {data.decode('utf-8', errors='ignore')}")
+            
+        except Exception as e:
+            print(f"Error reading from pipe: {e}")
+            break
+        
+        time.sleep(1)  # Sleep for a short period to prevent high CPU usage
 
-                count += 1
-        else:
-            print("No data received in the last second...")
-        time.sleep(0.1)  # Small delay to avoid high CPU usage
-
-except KeyboardInterrupt:
-    print("Serial reading interrupted. Closing the connection.")
-finally:
-    # Always close the port when done
-    ser.close()
-    print("Connection closed.")
+if __name__ == "__main__":
+    read_from_pipe()

@@ -1,77 +1,34 @@
-#include "driver.h"
+#include <wdm.h>  // For WDM drivers
 
-#ifdef ALLOC_PRAGMA
-#pragma alloc_text (INIT, DriverEntry)
-#pragma alloc_text (PAGE, PortIOEvtDeviceAdd)
-#endif
-
-VOID EvtIoWrite(
-    __in WDFQUEUE Queue,
-    __in WDFREQUEST Request,
-    __in size_t Length
-);
-
-NTSTATUS ConfigureSerialPort(USHORT PortBase);
-
-NTSTATUS PortIOEvtDeviceAdd(
-    __in WDFDRIVER       Driver,
-    __inout PWDFDEVICE_INIT DeviceInit
-);
-
-BOOLEAN IsTransmitterReady();
-
-NTSTATUS WaitForTransmitterReady();
-
-NTSTATUS
-DriverEntry(
-    __in PDRIVER_OBJECT  DriverObject,
-    __in PUNICODE_STRING RegistryPath
-)
-{
-    WDF_DRIVER_CONFIG config;
-    NTSTATUS status;
-
-    WDF_DRIVER_CONFIG_INIT(&config,
-                        PortIOEvtDeviceAdd
-                        );
-
-    status = WdfDriverCreate(DriverObject,
-                            RegistryPath,
-                            WDF_NO_OBJECT_ATTRIBUTES,
-                            &config,
-                            WDF_NO_HANDLE);
-    if (!NT_SUCCESS(status)) {
-        DbgPrint("Error: WdfDriverCreate failed 0x%x\n", status);
-        return status;
-    }
-
-    DbgPrint("Driver loaded successfully.\n");
-    return STATUS_SUCCESS;
-}
-
+#define DEVICE_NAME        L"\\Device\\MyCustomPort"
+#define SYMBOLIC_LINK_NAME L"\\DosDevices\\MyCustomPort"
 #define COM2_PORT_BASE_ADDRESS 0x2F8  // COM2 base address
 
-NTSTATUS PortIOEvtDeviceAdd(
-    __in WDFDRIVER       Driver,
-    __inout PWDFDEVICE_INIT DeviceInit
-)
+NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath);
+NTSTATUS DriverUnload(PDRIVER_OBJECT DriverObject);
+NTSTATUS ConfigureSerialPort(USHORT PortBase);
+VOID EvtIoWrite(PDEVICE_OBJECT DeviceObject, PIRP Irp);
+
+NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
+    UNICODE_STRING deviceName;
+    UNICODE_STRING symbolicLinkName;
+    PDEVICE_OBJECT deviceObject;
     NTSTATUS status;
-    WDFDEVICE device;
-    WDF_IO_QUEUE_CONFIG queueConfig;
-    WDF_OBJECT_ATTRIBUTES attributes;
 
-    UNREFERENCED_PARAMETER(Driver);
+    // Initialize the device and symbolic link names
+    RtlInitUnicodeString(&deviceName, DEVICE_NAME);
+    RtlInitUnicodeString(&symbolicLinkName, SYMBOLIC_LINK_NAME);
 
-    PAGED_CODE();
-
-    DbgPrint("Enter PortIoDeviceAdd\n");
-
-    // Create the device object.
-    status = WdfDeviceCreate(
-        &DeviceInit,
-        WDF_NO_OBJECT_ATTRIBUTES,
-        &device
+    // Create the device object
+    status = IoCreateDevice(
+        DriverObject,                  // Driver object
+        0,                             // Device extension size (no extra data for now)
+        &deviceName,                   // Device name
+        FILE_DEVICE_UNKNOWN,           // Device type (serial port)
+        0,                              // Device characteristics
+        FALSE,                          // Not exclusive
+        &deviceObject                  // Device object to be created
     );
 
     if (!NT_SUCCESS(status)) {
@@ -79,89 +36,38 @@ NTSTATUS PortIOEvtDeviceAdd(
         return status;
     }
 
-    // Create a default queue for the device
-    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchSequential);
-    queueConfig.EvtIoWrite = EvtIoWrite; // Set the write handler
-
-    status = WdfIoQueueCreate(
-        device,
-        &queueConfig,
-        WDF_NO_OBJECT_ATTRIBUTES,
-        NULL
-    );
-
+    // Create the symbolic link
+    IoDeleteSymbolicLink(&symbolicLinkName);
+    status = IoCreateSymbolicLink(&symbolicLinkName, &deviceName);
     if (!NT_SUCCESS(status)) {
-        DbgPrint("Failed to create I/O queue 0x%x\n", status);
+        DbgPrint("Failed to create symbolic link 0x%x\n", status);
+        IoDeleteDevice(deviceObject);  // Clean up the device object
         return status;
     }
 
-    // Now we configure the serial port parameters (COM2)
-    status = ConfigureSerialPort(COM2_PORT_BASE_ADDRESS);
-    if (!NT_SUCCESS(status)) {
-        DbgPrint("Failed to configure COM2 0x%x\n", status);
-        return status;
-    }
+    // Set up the driver unload routine
+    DriverObject->DriverUnload = DriverUnload;
 
-    DbgPrint("Device successfully added.\n");
+    DbgPrint("Driver loaded successfully.\n");
+
     return STATUS_SUCCESS;
 }
 
-VOID EvtIoWrite(
-    __in WDFQUEUE Queue,
-    __in WDFREQUEST Request,
-    __in size_t Length
-)
+NTSTATUS DriverUnload(PDRIVER_OBJECT DriverObject)
 {
-    PVOID buffer;
-    NTSTATUS status;
-    size_t bytesWritten = 0;
-    
-    DbgPrint("EvtIoWrite: Start writing to port\n");
+    UNICODE_STRING symbolicLinkName;
 
-    // Retrieve output buffer from the request
-    status = WdfRequestRetrieveOutputBuffer(Request, Length, &buffer, NULL);
-    if (!NT_SUCCESS(status)) {
-        DbgPrint("Failed to retrieve buffer 0x%x\n", status);
-        WdfRequestComplete(Request, status);
-        return;
-    }
+    // Initialize symbolic link name
+    RtlInitUnicodeString(&symbolicLinkName, SYMBOLIC_LINK_NAME);
 
-    // Start sending bytes one by one
-    for (bytesWritten = 0; bytesWritten < Length; bytesWritten++) {
-        // Wait for transmitter to be ready
-        status = WaitForTransmitterReady();
-        if (!NT_SUCCESS(status)) {
-            DbgPrint("Transmitter is not ready, retrying...\n");
-            WdfRequestComplete(Request, status);
-            return;
-        }
-        
-        // Send byte to COM2
-        WRITE_PORT_UCHAR(COM2_PORT_BASE_ADDRESS, ((PUCHAR)buffer)[bytesWritten]);  // Send byte to COM2
-        DbgPrint("Written byte 0x%x to COM2\n", ((PUCHAR)buffer)[bytesWritten]);
-    }
+    // Delete symbolic link
+    IoDeleteSymbolicLink(&symbolicLinkName);
 
-    // Complete the request after writing all the bytes
-    DbgPrint("EvtIoWrite: Completed writing to port\n");
-    WdfRequestComplete(Request, STATUS_SUCCESS);
-}
+    // Delete device object
+    IoDeleteDevice(DriverObject->DeviceObject);
 
-NTSTATUS WaitForTransmitterReady()
-{
-    LARGE_INTEGER delayTime;
-    NTSTATUS status;
+    DbgPrint("Driver unloaded successfully.\n");
 
-    // Set a timeout for checking (e.g., 100 milliseconds)
-    delayTime.QuadPart = -10000 * 100;  // 100ms in 100-nanosecond units
-
-    DbgPrint("Waiting for transmitter to be ready...\n");
-
-    while (!IsTransmitterReady()) {
-        // Wait for the timeout period before checking again
-        KeDelayExecutionThread(KernelMode, FALSE, &delayTime);
-    }
-
-    DbgPrint("Transmitter is ready.\n");
     return STATUS_SUCCESS;
 }
 
@@ -170,27 +76,22 @@ NTSTATUS ConfigureSerialPort(USHORT PortBase)
     UCHAR divisor;
     NTSTATUS status;
 
-    DbgPrint("Configuring serial port at base address 0x%x...\n", PortBase);
-
     // Reset the COM port (disable interrupts)
     WRITE_PORT_UCHAR(PortBase + 4, 0x00);  // Disable interrupts (IER)
 
     // Set the baud rate - Divisor Latch Access Bit (DLAB = 1)
     WRITE_PORT_UCHAR(PortBase + 3, 0x80);  // Enable DLAB
-    divisor = 3; // Example divisor for 9600 baud rate (assuming 115200 baud rate divisor for simplicity)
+    divisor = 3; // Example divisor for 9600 baud rate
     WRITE_PORT_UCHAR(PortBase, divisor);   // Set LSB of divisor
     WRITE_PORT_UCHAR(PortBase + 1, divisor); // Set MSB of divisor
 
     // Set 8 data bits, no parity, 1 stop bit
-    WRITE_PORT_UCHAR(PortBase + 3, 0x03);  // 8 data bits, no parity, 1 stop bit (also disables DLAB)
+    WRITE_PORT_UCHAR(PortBase + 3, 0x03);  // 8 data bits, no parity, 1 stop bit
 
-    // Enable FIFO (first-in, first-out) for serial port
+    // Enable FIFO for serial port
     WRITE_PORT_UCHAR(PortBase + 2, 0xC7);  // Enable FIFO, clear them, 14-byte threshold
 
-    // Enable modem control (optional, for handshake signals)
-    WRITE_PORT_UCHAR(PortBase + 4, 0x0B);  // Set RTS/DSR for flow control
-
-    // Enable the port (assuming the register map supports it)
+    // Enable modem control
     WRITE_PORT_UCHAR(PortBase + 4, 0x0F);  // Enable both receiver and transmitter
 
     DbgPrint("COM2 port configured successfully.\n");
@@ -198,14 +99,28 @@ NTSTATUS ConfigureSerialPort(USHORT PortBase)
     return STATUS_SUCCESS;
 }
 
-BOOLEAN IsTransmitterReady()
+VOID EvtIoWrite(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
-    UCHAR lsr;
-    
-    // Read the Line Status Register (LSR) from COM2 (PortBase + 5)
-    lsr = READ_PORT_UCHAR(COM2_PORT_BASE_ADDRESS + 5);  // LSR is at offset 5
+    PIO_STACK_LOCATION irpStack;
+    PVOID buffer;
+    NTSTATUS status;
+    PUCHAR pBuffer;
+    int length;
+    int i;
 
-    // Check if the Transmitter Holding Register Empty (THRE) bit is set (bit 5)
-    DbgPrint("LSR Register: 0x%x\n", lsr);
-    return (lsr & 0x20) != 0;
+    // Get the IRP stack location and output buffer
+    irpStack = IoGetCurrentIrpStackLocation(Irp);
+    length = irpStack->Parameters.Write.Length;
+    buffer = Irp->AssociatedIrp.SystemBuffer;
+    pBuffer = (PUCHAR)buffer;
+
+    for (i = 0; i < length; i++) {
+        WRITE_PORT_UCHAR(COM2_PORT_BASE_ADDRESS, pBuffer[i]);
+        DbgPrint("Written byte 0x%x to COM2\n", pBuffer[i]);
+    }
+
+    // Complete the IRP
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    Irp->IoStatus.Information = length;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
 }

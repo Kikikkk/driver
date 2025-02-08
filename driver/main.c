@@ -1,19 +1,27 @@
-typedef struct IUnknown IUnknown;
-
 #include <windows.h>
 #include <stdio.h>
 
-#define IOCTL_SEND_DATA_TO_PORT CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_GPD_SET_BAUD_RATE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_GET_DATA_FROM_PORT CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_READ_ACCESS)
+
+void log_error(const char* action) {
+    DWORD error = GetLastError();
+    printf("%s failed. Error code: %lu\n", action, error);
+    if (error == ERROR_INVALID_FUNCTION) {
+        printf("Possible issue with handler implementation in the driver.\n");
+    }
+}
 
 int main() {
     HANDLE hDevice;
     DWORD bytesReturned;
-    char buffer[256]; // Buffer for data to send to the driver
+    char readBuffer[256];  // Buffer to read data
+    ULONG baudRate = 9600; // Baud rate to set
 
     // Open the device (this will communicate with the driver)
     hDevice = CreateFile(
-        L"\\\\.\\IoctlDevice",        // The symbolic link to the driver
-        GENERIC_READ | GENERIC_WRITE, // We need both read and write access
+        L"\\\\.\\GpdDev",            // Symbolic link to the driver
+        GENERIC_READ | GENERIC_WRITE, // Both read and write access
         0,                            // No sharing
         NULL,                         // Default security attributes
         OPEN_EXISTING,                // Open the existing device
@@ -21,35 +29,49 @@ int main() {
         NULL                          // No template file
     );
 
-    // Check if the device was opened successfully
     if (hDevice == INVALID_HANDLE_VALUE) {
-        printf("Failed to open device. Error: %lu\n", GetLastError());
+        log_error("Opening device");
         return 1;
     }
 
-    // Prepare data to send to the serial port
-    snprintf(buffer, sizeof(buffer), "Hello, Serial Port!\n");
+    printf("Device opened successfully.\n");
 
-    // Send data via IOCTL to the driver
+    // Set the baud rate via IOCTL
     if (!DeviceIoControl(
-        hDevice,                    // Device handle
-        IOCTL_SEND_DATA_TO_PORT,    // IOCTL code
-        buffer,                     // Input buffer (data to send)
-        strlen(buffer) + 1,         // Size of the data (including null terminator)
-        NULL,                       // No output buffer
-        0,                          // No output
-        &bytesReturned,             // Bytes returned
-        NULL                        // No overlapped structure
+        hDevice,                     // Device handle
+        IOCTL_GPD_SET_BAUD_RATE,     // IOCTL code to set the baud rate
+        &baudRate,                   // Input buffer (baud rate)
+        sizeof(baudRate),            // Size of input buffer
+        NULL,                        // No output buffer
+        0,                           // No output
+        &bytesReturned,              // Bytes returned
+        NULL                         // Synchronous call
     )) {
-        printf("DeviceIoControl failed. Error: %lu\n", GetLastError());
+        log_error("Setting baud rate");
         CloseHandle(hDevice);
         return 1;
     }
 
-    printf("Data sent to driver: %s\n", buffer);
+    printf("Baud rate set: %lu baud\n", baudRate);
+
+    printf("Attempting to read data from the device...\n");
+    if (!DeviceIoControl(hDevice, IOCTL_GET_DATA_FROM_PORT, NULL, 0, readBuffer, sizeof(readBuffer), &bytesReturned, NULL)) {
+        log_error("Reading data from port");
+    } else {
+       if (bytesReturned > 0) {
+            printf("Received %lu bytes from driver: ", bytesReturned);
+            for (DWORD i = 0; i < bytesReturned; i++) {
+                printf("%02X ", (unsigned char)readBuffer[i]);
+            }
+            printf("\n");
+        } else {
+            printf("No data received from driver.\n");
+        }
+    }
 
     // Close the device handle
     CloseHandle(hDevice);
+    printf("Device handle closed.\n");
 
     return 0;
 }
